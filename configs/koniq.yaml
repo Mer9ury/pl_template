@@ -1,0 +1,48 @@
+runner_cfg:
+  seed: 42
+  output_dir: result
+  optimizer_cfg:
+    optimizer_name: adamw
+    lr: 0.0001
+    weight_decay: 0.0
+    momentum: 0.9
+    sgd_dampening: 0.0
+    sgd_nesterov: False
+    rmsprop_alpha: 0.99
+    adam_beta1: 0.9
+    adam_beta2: 0.999
+  lr_scheduler_cfg:
+    lr_scheduler_name: multi_step
+    stepsize:
+      - 60
+    gamma: 0.1
+    max_epochs: &max_epochs 100
+    warmup_epoch: 0
+    warmup_cons_lr: 1.0e-05
+    warmup_min_lr: 1.0e-05
+    warmup_type: constant
+    warmup_recount: True
+  model_cfg:
+    encoder_name: RN50
+data_cfg:
+  train_dataset_cfg:
+    data_dir: /workspace/dataset/koniq10k/512x384
+    metadata: /workspace/dataset/koniq10k/koniq10k_distributions_sets.csv
+  eval_dataset_cfg:
+    data_dir: /workspace/dataset/koniq10k/512x384
+    metadata: /workspace/dataset/koniq10k/koniq10k_distributions_sets.csv
+  train_dataloder_cfg:
+    num_workers: 8
+    batch_size: 32
+    shuffle: true
+  eval_dataloder_cfg:
+    num_workers: 8
+    batch_size: 32
+    shuffle: false
+trainer_cfg:
+  max_epochs: *max_epochs
+  precision: 16
+  accelerator: gpu
+  devices: 1
+  check_val_every_n_epoch: 1
+  num_sanity_val_steps: 1
