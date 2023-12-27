@@ -9,15 +9,18 @@ import os
 from pathlib import Path
 import numpy as np
 
-from mtiqa.runner.runner import Runner
-from mtiqa.dataset.datamodule import KonIQDataModule
+from inrct.runner.runner import Runner
+from inrct.dataset.datamodule import *
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--config", "-c", action="append", type=str, default=[])
 parser.add_argument("--gpu", "-g", type=lambda x: [int(i) for i in x.split(',')],  default=[0], required=False)
 parser.add_argument("--project", "-p", type=str, default=None)
 parser.add_argument("--name", "-n", type=str, default=None)
+parser.add_argument("--lr", type=float, default=None)
 parser.add_argument("--test_only", action="store_true", default=False)
+parser.add_argument("--seed", "-s", type=int, default=None)
+parser.add_argument("--use_wandb", action="store_true", default=False)
 
 parser.add_argument(
         "--cfg_options",
@@ -42,7 +45,7 @@ def main(cfg: DictConfig):
         **OmegaConf.to_container(cfg.trainer_cfg),
     )
 
-    datamodule = KonIQDataModule(**OmegaConf.to_container(cfg.data_cfg))
+    datamodule = get_datamodule(cfg.datamodule)(**OmegaConf.to_container(cfg.data_cfg))
 
     if not args.test_only:
         model = Runner(**OmegaConf.to_container(cfg.runner_cfg))
@@ -62,7 +65,7 @@ def parse_cfg(args, instantialize_output_dir=False):
     output_dir = Path(os.path.join('experiments',args.project, args.name))
     output_dir.mkdir(exist_ok=True, parents=True)
 
-    seed = cfg.runner_cfg.seed
+    seed = cfg.runner_cfg.seed if args.seed is None else args.seed 
     cli_cfg = OmegaConf.create(
         dict(
             config=args.config,
@@ -74,7 +77,10 @@ def parse_cfg(args, instantialize_output_dir=False):
     cfg = OmegaConf.merge(cfg, cli_cfg)
     cfg.gpus = args.gpu
     cfg.seed = seed
-    cfg.trainer_cfg.devices = len(args.gpu)
+    cfg.trainer_cfg.devices = args.gpu
+    cfg.use_wandb = args.use_wandb
+    if args.lr is not None:
+        cfg.runner_cfg.optimizer_cfg.lr = args.lr
 
     if instantialize_output_dir:
         OmegaConf.save(cfg, str(output_dir / "config.yaml"))

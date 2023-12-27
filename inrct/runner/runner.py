@@ -4,11 +4,13 @@ import torch.nn as nn
 
 import numpy as np
 from pathlib import Path
+import cv2
 
-from mtiqa.models.my_model import MyModel
-from mtiqa.utils.optimizer import build_optimizer
-from mtiqa.utils.lr_scheduler import build_lr_scheduler
-from mtiqa.utils.metrics import plcc, srocc
+from inrct.models.my_model import NILUT
+from inrct.utils.optimizer import build_optimizer
+from inrct.utils.lr_scheduler import build_lr_scheduler
+from inrct.utils.metrics import psnr, deltae_dist
+from inrct.models.utils import get_model
 
 
 class Runner(pl.LightningModule):
@@ -16,8 +18,8 @@ class Runner(pl.LightningModule):
     def __init__(self, seed, output_dir, optimizer_cfg, lr_scheduler_cfg, model_cfg):
         super().__init__()
 
-        self.model = self.get_model(model_cfg)
-        self.loss = nn.MSELoss()
+        self.model = get_model(model_cfg)
+        self.loss = nn.L1Loss()
         self.eps = 1e-6
         self.seed = seed
 
@@ -30,13 +32,18 @@ class Runner(pl.LightningModule):
 
     def run_step(self, batch, batch_idx, is_test = False):
         x, y = batch
-        y = y.float()
+        x = x.squeeze()
+        y = y.squeeze()
 
-        y_hat = self(x)
+        y_hat, _ = self.model(x.reshape(-1,3))
+        y_hat = y_hat.reshape(x.shape)
         loss = self.loss(y_hat, y)
 
         metrics = self.compute_per_example_metrics(y_hat, y)
+        if is_test and batch_idx % 10 == 0:
+            self.viz(batch_idx, x[0], y[0], y_hat[0])
         return {"loss": loss, "y_hat": y_hat, "y": y, **metrics}
+    
     
     def training_step(self, batch, batch_idx):
         outputs = self.run_step(batch, batch_idx, is_test = False)
@@ -45,13 +52,11 @@ class Runner(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         outputs = self.run_step(batch, batch_idx, is_test = True)
-
         return outputs
 
     def test_step(self, batch, batch_idx):
         outputs = self.run_step(batch, batch_idx, is_test = True)
         self.logging(outputs, "test", on_step=True, on_epoch=True)
-
         return outputs
 
     def eval_epoch_end(self, outputs, run_type):
@@ -66,10 +71,8 @@ class Runner(pl.LightningModule):
         y = [i['y'] for i in outputs]
         
         stats = {}
-        metrics = self.compute_per_example_metrics(torch.cat(y_hats, dim=0), torch.cat(y, dim=0))
+        metrics = self.compute_per_example_metrics(y_hats, y)
         stats.update(**metrics)
-
-        mae = y_pred*100 - y
 
         for k, _stats in stats.items():
             try:
@@ -87,12 +90,10 @@ class Runner(pl.LightningModule):
             f.write(json.dumps(stats) + "\n")
 
     def configure_optimizers(self):
-        optimizer = build_optimizer(model = self.model, **self.optimizer_cfg)
+        optimizer = build_optimizer(model=self.model, **self.optimizer_cfg)
         scheduler = build_lr_scheduler(optimizer=optimizer, **self.lr_scheduler_cfg)
         return optimizer
-        
-    def get_model(self, model_cfg):
-        return MyModel()
+
 
     def logging(self, outputs: dict, run_type: str, on_step=True, on_epoch=True):
         for k, v in outputs.items():
@@ -101,42 +102,25 @@ class Runner(pl.LightningModule):
 
     def compute_per_example_metrics(self, y_pred, y):
         mae = torch.mean(torch.abs(y_pred - y))
-        y_pred = y_pred.squeeze().detach().cpu().numpy().astype(np.float32)
-        y = y.squeeze().detach().cpu().numpy().astype(np.float32)
-        sr = torch.Tensor([srocc(y_pred, y)])
-        pl = torch.Tensor([plcc(y_pred, y)])
+        y_pred = y_pred.squeeze().cpu().detach().numpy()
+        y = y.squeeze().cpu().detach().numpy()
+        m_psnr = psnr(y_pred, y)
+        deltae = deltae_dist(y, y_pred)
 
-        return {f"mae": mae, f"srocc": sr, f"plcc": pl}
-    
-    # def viz(self, outputs):
-    #     i_f = [i['image_features'] for i in outputs]
-    #     t_f = outputs[0]['text_features'].to(torch.float32)
-    #     # print(torch.cdist(t_f[0][None,:], t_f[1][None,:]))
-    #     # print(torch.cosine_similarity(t_f[0][None,:], t_f[1][None,:], dim=-1))
-    #     i_f = torch.cat(i_f)
-    #     # #do t-sne and visualize with i_t and t_f
-    #     y = [i['y'].detach().cpu().numpy() for i in outputs]
-    #     features = torch.cat([t_f,i_f], dim=0)
-    #     labels = torch.cat([torch.zeros(i_f.shape[0]), torch.ones(t_f.shape[0])], dim=0)
-    #     tsne = TSNE(n_components=2, init='pca', random_state=0)
-    #     X_tsne = tsne.fit_transform(features.detach().cpu().numpy())
-    #     color_y = np.concatenate(y[:features.shape[0]-1])
-    #     plt.scatter(X_tsne[0, 0], X_tsne[0, 1], c='g')
-    #     plt.scatter(X_tsne[1, 0], X_tsne[1, 1], c='r')
-    #     plt.scatter(X_tsne[2:, 0], X_tsne[2:, 1], c=color_y, cmap=plt.cm.get_cmap("Blues", 10))
-    #     plt.colorbar(ticks=range(10))
-    #     plt.legend()
-    #     plt.savefig(os.path.join(self.output_dir,f'{self.current_epoch}_tsne.png'))
-    #     plt.clf() 
+        return {"mae": mae, "psnr": m_psnr, "deltae": deltae}
 
-    #     #make scatter plot of y and y_hat
-    #     y = np.array(y).flatten()
-    #     y_pred = torch.cat(y_hats).detach().cpu().numpy()
-    #     plt.scatter(y, y_pred, c='b', s=0.1)
-    #     plt.savefig(os.path.join(self.output_dir,f'{self.current_epoch}_scatter.png'))
-    #     plt.clf()
+    def denormalize(self, x):
+        return x * 255
 
-    #     plt.scatter(y, y - 100*y_pred, c = 'b', s=0.1)
-    #     plt.savefig(os.path.join(self.output_dir,f'{self.current_epoch}_diff.png'))
-    #     plt.clf()
-    
+    def viz(self, idx, x, y, y_hat):
+        x = self.denormalize(x.squeeze().cpu()).detach().numpy().astype(np.uint8)
+        y = self.denormalize(y.squeeze().cpu()).detach().numpy().astype(np.uint8)
+        y_hat = self.denormalize(y_hat.squeeze().cpu()).detach().numpy().astype(np.uint8)
+        x = cv2.cvtColor(x, cv2.COLOR_RGB2BGR)
+        y = cv2.cvtColor(y, cv2.COLOR_RGB2BGR)
+        y_hat = cv2.cvtColor(y_hat, cv2.COLOR_RGB2BGR)
+        print(str(self.output_dir / f"{self.current_epoch}_{idx}_input.png"))
+        cv2.imwrite(str(self.output_dir / f"{self.current_epoch}_{idx}_input.png"), x)
+        cv2.imwrite(str(self.output_dir / f"{self.current_epoch}_{idx}_gt.png"), y)
+        cv2.imwrite(str(self.output_dir / f"{self.current_epoch}_{idx}_pred.png"), y_hat)
+        
