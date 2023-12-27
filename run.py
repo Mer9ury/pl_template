@@ -42,6 +42,7 @@ def main(cfg: DictConfig):
     trainer = pl.Trainer(
         default_root_dir = cfg.runner_cfg.output_dir,
         logger=w_logger,
+        strategy = 'ddp_find_unused_parameters_true',
         **OmegaConf.to_container(cfg.trainer_cfg),
     )
 
